@@ -6,4 +6,5 @@ public interface MediaType {
 	public final static String BEETER_API_USER_COLLECTION = "application/vnd.beeter.api.user.collection+json"; //coleción usuarios
 	public final static String BEETER_API_STING = "application/vnd.beeter.api.sting+json"; //sting
 	public final static String BEETER_API_STING_COLLECTION = "application/vnd.beeter.api.sting.collection+json"; //coleción stings
+	public final static String BEETER_API_ERROR = "application/vnd.dsa.beeter.error+json";
 }
