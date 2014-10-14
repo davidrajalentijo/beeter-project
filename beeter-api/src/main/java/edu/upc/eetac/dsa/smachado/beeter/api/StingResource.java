@@ -5,6 +5,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Timestamp;
 
 import javax.sql.DataSource;
 import javax.ws.rs.BadRequestException;
@@ -17,7 +18,12 @@ import javax.ws.rs.PUT;
 import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
+import javax.ws.rs.QueryParam;
 import javax.ws.rs.ServerErrorException;
+import javax.ws.rs.core.CacheControl;
+import javax.ws.rs.core.Context;
+import javax.ws.rs.core.EntityTag;
+import javax.ws.rs.core.Request;
 import javax.ws.rs.core.Response;
 
 import edu.upc.eetac.dsa.smachado.beeter.api.model.Sting;
@@ -29,18 +35,25 @@ public class StingResource {
 
 
 
-	private String GET_STINGS_QUERY = "select s.*, u.name from stings s, users u where u.username=s.username order by creation_timestamp desc";
+	//private String GET_STINGS_QUERY = "select s.*, u.name from stings s, users u where u.username=s.username order by creation_timestamp desc";
 	private String GET_STING_BY_ID_QUERY = "select s.*, u.name from stings s, users u where u.username=s.username and s.stingid=?";
+	private String GET_STINGS_QUERY = "select s.*, u.name from stings s, users u where u.username=s.username and s.creation_timestamp < ifnull(?, now())  order by creation_timestamp desc limit ?";
+	private String GET_STINGS_QUERY_FROM_LAST = "select s.*, u.name from stings s, users u where u.username=s.username and s.creation_timestamp > ? order by creation_timestamp desc";
 	private String INSERT_STING_QUERY = "insert into stings (username, subject, content) value (?, ?, ?)";
 	private String DELETE_STING_QUERY = "delete from stings where stingid=?";
 	private String UPDATE_STING_QUERY = "update stings set subject=ifnull(?, subject), content=ifnull(?, content) where stingid=?";
 	
-	@GET //Nos devuelve toda la colección de stings
-	@Produces(MediaType.BEETER_API_STING_COLLECTION) //indica el mediatype de la respuesta, donde veremos una cabecera content-type igual al valor de este string
-	public StingCollection getStings() {
-		StingCollection stings = new StingCollection(); //modelo
+	
+	
+	//http://localhost:8080/beeter-api/stings?after=1412756428000
+	//http://localhost:8080/beeter-api/stings?before=1412756428000
+	@GET //queremos que nos lo de vuelva solo los ultimos stings que se han producido y limitamos los resultados a partir de un determinado timestamp
+	@Produces(MediaType.BEETER_API_STING_COLLECTION)
+	public StingCollection getStings(@QueryParam("length") int length,
+			@QueryParam("before") long before, @QueryParam("after") long after) {
+		//querys parameters que permite obtener balores de los queryparam
+		StingCollection stings = new StingCollection();
 	 
-		 //conexion se obtiene a través del datasource
 		Connection conn = null;
 		try {
 			conn = ds.getConnection();
@@ -49,33 +62,41 @@ public class StingResource {
 					Response.Status.SERVICE_UNAVAILABLE);
 		}
 	 
-		PreparedStatement stmt = null; 
+		PreparedStatement stmt = null;
 		try {
-			stmt = conn.prepareStatement(GET_STINGS_QUERY); //preparamos la query
-			ResultSet rs = stmt.executeQuery(); //ejecutamos la query
+			boolean updateFromLast = after > 0;
+			stmt = updateFromLast ? conn
+					.prepareStatement(GET_STINGS_QUERY_FROM_LAST) : conn
+					.prepareStatement(GET_STINGS_QUERY);
+			if (updateFromLast) {
+				stmt.setTimestamp(1, new Timestamp(after));
+			} else {
+				if (before > 0)
+					stmt.setTimestamp(1, new Timestamp(before));
+				else
+					stmt.setTimestamp(1, null);
+				length = (length <= 0) ? 5 : length;
+				stmt.setInt(2, length);
+			}
+			ResultSet rs = stmt.executeQuery();
+			boolean first = true;
+			long oldestTimestamp = 0;
 			while (rs.next()) {
-				Sting sting = new Sting(); //modelo para un sting
-				sting.setStingid(rs.getString("stingid")); //damos valores a lo que recuperamos (atributos) de la base de datos
+				Sting sting = new Sting();
+				sting.setStingid(rs.getString("stingid"));
 				sting.setUsername(rs.getString("username"));
 				sting.setAuthor(rs.getString("name"));
 				sting.setSubject(rs.getString("subject"));
-				sting.setLastModified(rs.getTimestamp("last_modified")
-						.getTime());
-				sting.setCreationTimestamp(rs
-						.getTimestamp("creation_timestamp").getTime());
-				stings.addSting(sting); //lo añadimos a la conexión
+				oldestTimestamp = rs.getTimestamp("last_modified").getTime();
+				sting.setLastModified(oldestTimestamp);
+				if (first) {
+					first = false;
+					stings.setNewestTimestamp(sting.getLastModified());
+				}
+				stings.addSting(sting);
 			}
-		} //catch (SQLException e) {
-			//e.printStackTrace();
-		//} finally {
-			//try {
-				//if (stmt != null)
-					//stmt.close();
-				//conn.close(); //cerramos la conexión, la devolvemos al pool
-			//} catch (SQLException e) {
-			//}
-		//}
-		catch (SQLException e) {
+			stings.setOldestTimestamp(oldestTimestamp);
+		} catch (SQLException e) {
 			throw new ServerErrorException(e.getMessage(),
 					Response.Status.INTERNAL_SERVER_ERROR);
 		} finally {
@@ -87,17 +108,45 @@ public class StingResource {
 			}
 		}
 	 
-		return stings; //devolvemos Stings
+		return stings;
 	}
 	
 	//MOXY pasa JSON a un objeto java y un objeto java a json
 
 	
 	
-	@GET //Metodo que nos devuelve un sting en concreto pasandole una id
+	@GET
 	@Path("/{stingid}")
-	@Produces(MediaType.BEETER_API_STING) //mediatype definido
-	public Sting getSting(@PathParam("stingid") String stingid) {
+	@Produces(MediaType.BEETER_API_STING)
+	public Response getSting(@PathParam("stingid") String stingid, //Response manualmente construimos la respuesta
+			@Context Request request) { //rquest mapea la peticion http, context : jersey injecta la peticion http en el objeto request
+		// Create CacheControl
+		CacheControl cc = new CacheControl();
+	 
+		Sting sting = getStingFromDatabase(stingid); //recuperar recurso de la base de datos
+	 
+		// Calculate the ETag on last modified date of user resource
+		EntityTag eTag = new EntityTag(Long.toString(sting.getLastModified())); 
+	 
+		// Verify if it matched with etag available in http request
+		Response.ResponseBuilder rb = request.evaluatePreconditions(eTag);
+	 
+		// If ETag matches the rb will be non-null;
+		// Use the rb to return the response without any further processing
+		if (rb != null) {
+			return rb.cacheControl(cc).tag(eTag).build();
+		}
+	 
+		// If rb is null then either it is first time request; or resource is
+		// modified
+		// Get the updated representation and return with Etag attached to it
+		rb = Response.ok(sting).cacheControl(cc).tag(eTag);
+	 
+		return rb.build();
+	}
+	
+
+	private Sting getStingFromDatabase( String stingid) {
 		//En el pathparam le pasamos el valor de lo que queremos pasarle es decir el stingid y se lo indicamos
 		Sting sting = new Sting();
 	 
@@ -144,6 +193,27 @@ public class StingResource {
 	}
 	
 	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
 	@POST //metodo para crear un sting
 	@Consumes(MediaType.BEETER_API_STING) //no especifica el tipo que se come, jersey coje el json y crea un sting
 	@Produces(MediaType.BEETER_API_STING)
@@ -170,7 +240,7 @@ public class StingResource {
 			if (rs.next()) {
 				int stingid = rs.getInt(1);
 	 
-				sting = getSting(Integer.toString(stingid));
+				sting = getStingFromDatabase(Integer.toString(stingid));
 			} else {
 				// Something has failed...
 			}
@@ -256,15 +326,16 @@ public class StingResource {
 	 
 		PreparedStatement stmt = null;
 		try {
-			String sql = buildUpdateSting();
-			stmt = conn.prepareStatement(sql);
+			
+			
+			stmt = conn.prepareStatement(UPDATE_STING_QUERY);
 			stmt.setString(1, sting.getSubject());
 			stmt.setString(2, sting.getContent());
 			stmt.setInt(3, Integer.valueOf(stingid));
 	 
 			int rows = stmt.executeUpdate();
 			if (rows == 1)
-				sting = getSting(stingid);
+				sting = getStingFromDatabase(stingid);
 			else {
 				throw new NotFoundException("There's no sting with stingid="
 						+ stingid);
@@ -294,9 +365,6 @@ public class StingResource {
 					"Content can't be greater than 500 characters.");
 	}
 	
-	private String buildUpdateSting() {
-		return "update stings set subject=ifnull(?, subject), content=ifnull(?, content) where stingid=?";
-	}
 	
 	
 

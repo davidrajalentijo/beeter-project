@@ -54,6 +54,10 @@
         	<version>5.1.33</version>
         	 <!-- 5.1.33 -->
         </dependency>
+        <dependency>
+        	<groupId>org.glassfish.jersey.ext</groupId>
+        	<artifactId>jersey-declarative-linking</artifactId>
+        </dependency>
     </dependencies>
     <properties>
         <jersey.version>2.13</jersey.version>
