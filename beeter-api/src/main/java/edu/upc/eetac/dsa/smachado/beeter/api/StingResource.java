@@ -11,6 +11,7 @@ import javax.sql.DataSource;
 import javax.ws.rs.BadRequestException;
 import javax.ws.rs.Consumes;
 import javax.ws.rs.DELETE;
+import javax.ws.rs.ForbiddenException;
 import javax.ws.rs.GET;
 import javax.ws.rs.NotFoundException;
 import javax.ws.rs.POST;
@@ -25,6 +26,7 @@ import javax.ws.rs.core.Context;
 import javax.ws.rs.core.EntityTag;
 import javax.ws.rs.core.Request;
 import javax.ws.rs.core.Response;
+import javax.ws.rs.core.SecurityContext;
 
 import edu.upc.eetac.dsa.smachado.beeter.api.model.Sting;
 import edu.upc.eetac.dsa.smachado.beeter.api.model.StingCollection;
@@ -32,7 +34,8 @@ import edu.upc.eetac.dsa.smachado.beeter.api.model.StingCollection;
 @Path("/stings") //URI relativa stings
 public class StingResource {
 	private DataSource ds = DataSourceSPA.getInstance().getDataSource(); //obtenemos referencia al datasource, para hacer operaciones CRUD, obteniendola con el singelton que hemos generado
-
+	@Context
+	private SecurityContext security;
 
 
 	//private String GET_STINGS_QUERY = "select s.*, u.name from stings s, users u where u.username=s.username order by creation_timestamp desc";
@@ -232,9 +235,13 @@ public class StingResource {
 			stmt = conn.prepareStatement(INSERT_STING_QUERY,
 					Statement.RETURN_GENERATED_KEYS); //le pasamos la query y le pedimos que nos devuelva las claves generadas (primary key autogenerada) ya que stingid es autoincremental y queremos saber su valor (retur_generate_keys)
 	 //llamamos al metodo get stings y le pasamos el stingid que queremos recuperar
-			stmt.setString(1, sting.getUsername());
+			
+			stmt.setString(1, security.getUserPrincipal().getName()); //devuelve el id del usuario autenticado
 			stmt.setString(2, sting.getSubject());
 			stmt.setString(3, sting.getContent());
+			//stmt.setString(1, sting.getUsername());
+			//stmt.setString(2, sting.getSubject());
+			//stmt.setString(3, sting.getContent());
 			stmt.executeUpdate();
 			ResultSet rs = stmt.getGeneratedKeys(); //devuelve stingid, si no devuelve nada es que algo ha ido mal
 			if (rs.next()) {
@@ -278,6 +285,7 @@ public class StingResource {
 	@Path("/{stingid}")
 	public void deleteSting(@PathParam("stingid") String stingid) {
 		//tenemos un void de manera que no devuelve nada ni consume ni produce, devuelve 204 ya que no hay contenido
+		validateUser(stingid);
 		Connection conn = null;
 		try {
 			conn = ds.getConnection();
@@ -315,6 +323,7 @@ public class StingResource {
 	@Consumes(MediaType.BEETER_API_STING)
 	@Produces(MediaType.BEETER_API_STING)
 	public Sting updateSting(@PathParam("stingid") String stingid, Sting sting) {
+		validateUser(stingid);
 		validateUpdateSting(sting);
 		Connection conn = null;
 		try {
@@ -365,8 +374,14 @@ public class StingResource {
 					"Content can't be greater than 500 characters.");
 	}
 	
-	
-	
+	private void validateUser(String stingid) {
+	    Sting sting = getStingFromDatabase(stingid);
+	    String username = sting.getUsername();
+		if (!security.getUserPrincipal().getName()
+				.equals(username))
+			throw new ForbiddenException(
+					"You are not allowed to modify this sting.");
+	}
 
 
 }
